@@ -30,7 +30,7 @@ A fast, native macOS disk space analyzer with hierarchical cushion treemap visua
 
 ## Screenshots
 
-*Scan a folder, then explore the treemap and tree view.*
+<img width="1440" height="900" alt="Screenshot 2026-04-10 at 20 55 28" src="https://github.com/user-attachments/assets/f4a3a55d-8261-4104-87dd-4024f8a69a70" />
 
 ## Building
 
