@@ -113,7 +113,8 @@ struct ContentView: View {
             }
 
             if let displayNode = scanState.displayRoot {
-                HSplitView {
+                HStack(spacing: 0) {
+                    // Treemap — takes all available space
                     VStack(spacing: 0) {
                         TreemapView(
                             node: displayNode,
@@ -131,9 +132,11 @@ struct ContentView: View {
                             heatmapLegend
                         }
                     }
-                    .frame(minWidth: 400, minHeight: 300)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    // Right panel: stats + info
+                    Divider()
+
+                    // Right panel: fixed width, doesn't resize
                     VStack(spacing: 0) {
                         FileTypeStatsView(
                             stats: scanState.extensionStats,
@@ -149,7 +152,7 @@ struct ContentView: View {
                             .frame(minHeight: 160, idealHeight: 220)
                         }
                     }
-                    .frame(minWidth: 270, idealWidth: 320, maxWidth: 420)
+                    .frame(width: 300)
                 }
             } else if scanState.isScanning {
                 VStack(spacing: 16) {
