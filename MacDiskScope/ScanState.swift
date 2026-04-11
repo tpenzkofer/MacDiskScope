@@ -117,9 +117,7 @@ final class ScanState: ObservableObject {
     }
 
     func cancelScan() {
-        Task {
-            await scanner.cancel()
-        }
+        scanner.cancel()
         isScanning = false
         scanProgress = "Scan cancelled"
     }

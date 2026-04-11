@@ -1,39 +1,86 @@
 import Foundation
 
-actor DirectoryScanner {
-    private var isCancelled = false
+final class DirectoryScanner: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _cancelled = false
+    private var _scannedFiles: Int = 0
+    private var _scannedBytes: Int64 = 0
 
-    private(set) var scannedFiles: Int = 0
-    private(set) var scannedBytes: Int64 = 0
+    private static let keys: Set<URLResourceKey> = [
+        .isDirectoryKey, .fileSizeKey, .totalFileAllocatedSizeKey,
+        .isSymbolicLinkKey, .contentModificationDateKey
+    ]
+    private static let keysArray = Array(keys)
 
-    func cancel() {
-        isCancelled = true
+    var isCancelled: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return _cancelled
     }
 
-    func scan(path: String, progressCallback: @Sendable @escaping (Int, Int64) -> Void, phaseCallback: @Sendable @escaping (String) -> Void = { _ in }) async -> FileNode? {
-        isCancelled = false
-        scannedFiles = 0
-        scannedBytes = 0
+    func cancel() {
+        lock.lock(); _cancelled = true; lock.unlock()
+    }
 
-        let url = URL(fileURLWithPath: path)
-        let name = url.lastPathComponent
+    private func addProgress(files: Int, bytes: Int64) {
+        lock.lock()
+        _scannedFiles += files
+        _scannedBytes += bytes
+        lock.unlock()
+    }
+
+    private func getProgress() -> (Int, Int64) {
+        lock.lock(); defer { lock.unlock() }
+        return (_scannedFiles, _scannedBytes)
+    }
+
+    // MARK: - Public API
+
+    func scan(
+        path: String,
+        progressCallback: @Sendable @escaping (Int, Int64) -> Void,
+        phaseCallback: @Sendable @escaping (String) -> Void = { _ in }
+    ) async -> FileNode? {
+        lock.lock()
+        _cancelled = false; _scannedFiles = 0; _scannedBytes = 0
+        lock.unlock()
+
+        let name = (path as NSString).lastPathComponent
         let root = FileNode(name: name, path: path, isDirectory: true)
 
-        await scanDirectory(node: root, progressCallback: progressCallback, phaseCallback: phaseCallback)
+        // Background progress reporter
+        let progressTask = Task.detached { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                guard let self else { return }
+                let (f, b) = self.getProgress()
+                progressCallback(f, b)
+            }
+        }
 
-        return isCancelled ? nil : root
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                self.scanRecursive(node: root)
+                continuation.resume()
+            }
+        }
+
+        progressTask.cancel()
+        guard !isCancelled else { return nil }
+
+        let (f, b) = getProgress()
+        progressCallback(f, b)
+        phaseCallback("\(FormatUtils.formatCount(f)) files, \(FormatUtils.formatBytes(b))")
+
+        return root
     }
 
     func scanSingleDirectory(path: String) async -> FileNode? {
-        let url = URL(fileURLWithPath: path)
-        let name = url.lastPathComponent
-
+        let name = (path as NSString).lastPathComponent
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir) else { return nil }
-
         let node = FileNode(name: name, path: path, isDirectory: isDir.boolValue)
         if isDir.boolValue {
-            await scanDirectory(node: node, progressCallback: { _, _ in }, phaseCallback: { _ in })
+            scanRecursive(node: node)
         } else {
             let attrs = try? FileManager.default.attributesOfItem(atPath: path)
             node.size = (attrs?[.size] as? Int64) ?? 0
@@ -42,88 +89,59 @@ actor DirectoryScanner {
         return node
     }
 
-    private func scanDirectory(node: FileNode, progressCallback: @Sendable @escaping (Int, Int64) -> Void, phaseCallback: @Sendable @escaping (String) -> Void) async {
+    // MARK: - Recursive per-directory scan
+    //
+    // Instead of flat enumeration + expensive nodeMap + depth-sort,
+    // enumerate each directory non-recursively and recurse into subdirs.
+    // FileManager.contentsOfDirectory(at:includingPropertiesForKeys:)
+    // uses getattrlistbulk internally — this is the fastest macOS API
+    // when called per-directory.
+
+    private func scanRecursive(node: FileNode) {
         guard !isCancelled else { return }
 
+        let url = URL(fileURLWithPath: node.path)
         let fm = FileManager.default
-        let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey, .totalFileAllocatedSizeKey, .isSymbolicLinkKey, .contentModificationDateKey]
 
-        guard let enumerator = fm.enumerator(
-            at: URL(fileURLWithPath: node.path),
-            includingPropertiesForKeys: keys,
+        guard let contents = try? fm.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: Self.keysArray,
             options: []
         ) else { return }
 
-        var nodeMap: [String: FileNode] = [node.path: node]
-        var childrenMap: [String: [FileNode]] = [:]
+        var localFiles = 0
+        var localBytes: Int64 = 0
 
-        var batchCount = 0
-        let reportInterval = 500
-
-        while let url = enumerator.nextObject() as? URL {
+        for childURL in contents {
             if isCancelled { return }
 
-            guard let resourceValues = try? url.resourceValues(forKeys: Set(keys)) else { continue }
+            guard let rv = try? childURL.resourceValues(forKeys: Self.keys) else { continue }
 
-            let isSymlink = resourceValues.isSymbolicLink ?? false
-            if isSymlink {
-                enumerator.skipDescendants()
-                continue
-            }
+            if rv.isSymbolicLink == true { continue }
 
-            let isDir = resourceValues.isDirectory ?? false
-            let filePath = url.path
-            let fileName = url.lastPathComponent
+            let isDir = rv.isDirectory == true
+            let child = FileNode(
+                name: childURL.lastPathComponent,
+                path: childURL.path,
+                isDirectory: isDir
+            )
+            child.modificationDate = rv.contentModificationDate
+            child.parent = node
 
-            let child = FileNode(name: fileName, path: filePath, isDirectory: isDir)
-            child.modificationDate = resourceValues.contentModificationDate
-
-            if !isDir {
-                let fileSize = Int64(resourceValues.totalFileAllocatedSize ?? resourceValues.fileSize ?? 0)
-                child.size = fileSize
-                child.allocatedSize = fileSize
-                scannedFiles += 1
-                scannedBytes += fileSize
-            }
-
-            let parentPath = (filePath as NSString).deletingLastPathComponent
-            childrenMap[parentPath, default: []].append(child)
             if isDir {
-                nodeMap[filePath] = child
-            }
-
-            child.parent = nodeMap[parentPath]
-
-            batchCount += 1
-            if batchCount >= reportInterval {
-                batchCount = 0
-                let f = scannedFiles
-                let b = scannedBytes
-                progressCallback(f, b)
+                scanRecursive(node: child)
+                node.children.append(child)
+            } else {
+                let sz = Int64(rv.totalFileAllocatedSize ?? rv.fileSize ?? 0)
+                child.size = sz
+                child.allocatedSize = sz
+                node.children.append(child)
+                localFiles += 1
+                localBytes += sz
             }
         }
 
-        phaseCallback("Building tree (\(FormatUtils.formatCount(nodeMap.count)) folders)...")
-
-        // Build tree bottom-up — sort by path depth (deepest first)
-        // Count slashes instead of splitting into arrays — much faster
-        let allDirPaths = nodeMap.keys.sorted { p1, p2 in
-            var c1 = 0; for ch in p1.utf8 where ch == 0x2F { c1 += 1 }
-            var c2 = 0; for ch in p2.utf8 where ch == 0x2F { c2 += 1 }
-            return c1 > c2
-        }
-
-        for dirPath in allDirPaths {
-            guard let dirNode = nodeMap[dirPath] else { continue }
-            if let kids = childrenMap[dirPath] {
-                // Assign unsorted — sortedBySize cache handles display order lazily
-                dirNode.children = kids
-            }
-            dirNode.updateSizeFromChildren()
-        }
-
-        let f = scannedFiles
-        let b = scannedBytes
-        progressCallback(f, b)
+        addProgress(files: localFiles, bytes: localBytes)
+        node.updateSizeFromChildren()
     }
 }

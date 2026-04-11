@@ -93,7 +93,7 @@ final class TreemapCoordinator {
         var df: [TreemapRect] = []
         var lr: [TreemapRect] = []
 
-        let topRects = TreemapLayout.layout(nodes: items, in: CGRect(origin: .zero, size: size), minSize: 1.5)
+        let topRects = TreemapLayout.layout(nodes: items, in: CGRect(origin: .zero, size: size), minSize: 0.5)
 
         for rect in topRects {
             if rect.node.isDirectory && !rect.node.children.isEmpty {
@@ -163,14 +163,18 @@ final class TreemapCoordinator {
         guard innerRect.width >= 1 && innerRect.height >= 1 else { return }
         guard depth < maxDepth else {
             leafRects.append(contentsOf: TreemapLayout.layout(
-                nodes: node.children.filter { $0.size > 0 }, in: innerRect, minSize: 1.0))
+                nodes: node.children.filter { $0.size > 0 }, in: innerRect, minSize: 0.5))
             return
         }
 
-        let childRects = TreemapLayout.layout(
-            nodes: node.children.filter { $0.size > 0 }, in: innerRect, minSize: 1.0)
+        let allChildren = node.children.filter { $0.size > 0 }
+        let childRects = TreemapLayout.layout(nodes: allChildren, in: innerRect, minSize: 0.5)
+
+        // Track how much area the laid-out children cover
+        var coveredArea: Double = 0
 
         for cr in childRects {
+            coveredArea += cr.width * cr.height
             if cr.node.isDirectory && !cr.node.children.isEmpty && cr.width > 3 && cr.height > 3 {
                 layoutHierarchical(
                     node: cr.node,
@@ -181,6 +185,26 @@ final class TreemapCoordinator {
                 )
             } else {
                 leafRects.append(cr)
+            }
+        }
+
+        // If there's significant uncovered area (tiny files that got filtered out),
+        // emit the directory node itself as a leaf rect to fill the gap
+        let totalArea = innerRect.width * innerRect.height
+        let uncovered = totalArea - coveredArea
+        if uncovered > 2 && totalArea > 0 {
+            // Find the remaining space — approximate as bottom-right corner
+            // This fills the gap with the directory's muted color instead of black
+            if let lastRect = childRects.last {
+                let gapX = lastRect.x + lastRect.width
+                let gapW = innerRect.maxX - gapX
+                if gapW > 0.5 {
+                    leafRects.append(TreemapRect(
+                        x: gapX, y: innerRect.minY, width: gapW, height: innerRect.height,
+                        node: node, depth: depth, isDirectoryFrame: false,
+                        cushionX: cushionX, cushionY: cushionY
+                    ))
+                }
             }
         }
     }
@@ -325,11 +349,11 @@ final class TreemapNSView: NSView {
         let lightY: Double = -0.09
         let ambientLight: Double = 0.12
 
-        // Draw directory frames
+        // Draw directory frames — use a muted version of the dominant child color
+        // instead of pure dark, so gaps from filtered-out tiny files blend better
         for frame in coordinator.dirFrames {
             let cgRect = CGRect(x: frame.x, y: frame.y, width: frame.width, height: frame.height)
-            let brightness: CGFloat = frame.depth == 0 ? 0.18 : min(0.14 + CGFloat(frame.depth) * 0.02, 0.25)
-            ctx.setFillColor(gray: brightness, alpha: 1)
+            ctx.setFillColor(gray: 0.15, alpha: 1)
             ctx.fill(cgRect)
 
             // Header label at top levels
