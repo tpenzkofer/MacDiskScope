@@ -88,15 +88,11 @@ final class ScanState: ObservableObject {
         self.scanner = scannerRef
 
         Task {
-            let result = await scannerRef.scan(
-                path: path,
-                progressCallback: { [weak self] files, bytes in
-                    Task { @MainActor in
-                        self?.scanProgress = "Scanned \(FormatUtils.formatCount(files)) files (\(FormatUtils.formatBytes(bytes)))"
-                    }
-                },
-                snapshotCallback: { _ in }
-            )
+            let result = await scannerRef.scan(path: path) { [weak self] files, bytes in
+                Task { @MainActor in
+                    self?.scanProgress = "Scanned \(FormatUtils.formatCount(files)) files (\(FormatUtils.formatBytes(bytes)))"
+                }
+            }
 
             if let root = result {
                 self.rootNode = root
