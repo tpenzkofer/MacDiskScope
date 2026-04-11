@@ -45,10 +45,10 @@ git clone https://github.com/YOUR_USERNAME/MacDiskScope.git
 cd MacDiskScope
 
 # Build
-xcodebuild -project MacDirStat.xcodeproj -scheme MacDiskScope -configuration Release build
+xcodebuild -project MacDiskScope.xcodeproj -scheme MacDiskScope -configuration Release build
 
 # Or open in Xcode
-open MacDirStat.xcodeproj
+open MacDiskScope.xcodeproj
 ```
 
 ### Create DMG

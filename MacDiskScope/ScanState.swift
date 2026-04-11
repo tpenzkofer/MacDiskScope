@@ -20,6 +20,7 @@ final class ScanState: ObservableObject {
     @Published var isScanning = false
     @Published var scanProgress: String = ""
     @Published var selectedNode: FileNode?
+    @Published var selectedNodes: [FileNode] = []
     @Published var selectedNodeID: UUID?
     @Published var treemapRoot: FileNode?
     @Published var extensionStats: [(ext: String, size: Int64)] = []
@@ -193,7 +194,14 @@ final class ScanState: ObservableObject {
 
     func selectNode(_ node: FileNode) {
         selectedNode = node
+        selectedNodes = [node]
         selectedNodeID = node.id
+    }
+
+    func selectMultiple(_ nodes: [FileNode]) {
+        selectedNodes = nodes
+        selectedNode = nodes.last
+        selectedNodeID = nodes.last?.id
     }
 
     func updateExtensionStats() {
@@ -209,30 +217,42 @@ final class ScanState: ObservableObject {
 
     // MARK: - File Operations
 
-    func deleteNode(_ node: FileNode) {
-        let url = URL(fileURLWithPath: node.path)
-        do {
-            try FileManager.default.trashItem(at: url, resultingItemURL: nil)
-            removeNodeFromTree(node)
-        } catch {
+    func deleteNodes(_ nodes: [FileNode]) {
+        var errors: [String] = []
+        for node in nodes {
+            let url = URL(fileURLWithPath: node.path)
+            do {
+                try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+                removeNodeFromTree(node)
+            } catch {
+                errors.append("\(node.name): \(error.localizedDescription)")
+            }
+        }
+        if !errors.isEmpty {
             let alert = NSAlert()
-            alert.messageText = "Could not move to Trash"
-            alert.informativeText = error.localizedDescription
+            alert.messageText = "Some items could not be moved to Trash"
+            alert.informativeText = errors.joined(separator: "\n")
             alert.alertStyle = .warning
             alert.runModal()
         }
     }
 
-    func moveNode(_ node: FileNode, to destination: URL) {
-        let sourceURL = URL(fileURLWithPath: node.path)
-        let destURL = destination.appendingPathComponent(node.name)
-        do {
-            try FileManager.default.moveItem(at: sourceURL, to: destURL)
-            removeNodeFromTree(node)
-        } catch {
+    func moveNodes(_ nodes: [FileNode], to destination: URL) {
+        var errors: [String] = []
+        for node in nodes {
+            let sourceURL = URL(fileURLWithPath: node.path)
+            let destURL = destination.appendingPathComponent(node.name)
+            do {
+                try FileManager.default.moveItem(at: sourceURL, to: destURL)
+                removeNodeFromTree(node)
+            } catch {
+                errors.append("\(node.name): \(error.localizedDescription)")
+            }
+        }
+        if !errors.isEmpty {
             let alert = NSAlert()
-            alert.messageText = "Could not move item"
-            alert.informativeText = error.localizedDescription
+            alert.messageText = "Some items could not be moved"
+            alert.informativeText = errors.joined(separator: "\n")
             alert.alertStyle = .warning
             alert.runModal()
         }

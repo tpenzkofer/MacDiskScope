@@ -3,7 +3,7 @@ set -e
 
 APP_NAME="MacDiskScope"
 SCHEME="MacDiskScope"
-PROJECT="MacDirStat.xcodeproj"
+PROJECT="MacDiskScope.xcodeproj"
 BUILD_DIR="build"
 DMG_NAME="${APP_NAME}.dmg"
 VOLUME_NAME="${APP_NAME}"

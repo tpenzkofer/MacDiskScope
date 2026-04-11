@@ -121,23 +121,37 @@ final class TreemapCoordinator {
     ) {
         guard rect.width >= 2 && rect.height >= 2 else { return }
 
-        dirFrames.append(TreemapRect(
-            x: rect.minX, y: rect.minY, width: rect.width, height: rect.height,
-            node: node, depth: depth, isDirectoryFrame: true,
-            cushionX: cushionX, cushionY: cushionY
-        ))
-
-        // Tight padding: shrinks with depth to avoid black patches
+        // For small rects at deep levels, skip the frame entirely — just lay out children flat
+        let tooSmallForFrame = rect.width < 20 || rect.height < 20
         let padding: Double
-        switch depth {
-        case 0:  padding = 1.5
-        case 1:  padding = 1.0
-        default: padding = 0.5
-        }
+        let headerH: Double
 
-        // Only show header labels at top 2 levels with sufficient space
-        let headerH: Double = (depth <= 1 && rect.width > 70 && rect.height > 20)
-            ? min(12, rect.height * 0.1) : 0
+        if tooSmallForFrame || depth >= 3 {
+            padding = 0
+            headerH = 0
+            // Still emit a thin directory frame for visual separation
+            if depth <= 2 {
+                dirFrames.append(TreemapRect(
+                    x: rect.minX, y: rect.minY, width: rect.width, height: rect.height,
+                    node: node, depth: depth, isDirectoryFrame: true,
+                    cushionX: cushionX, cushionY: cushionY
+                ))
+            }
+        } else {
+            switch depth {
+            case 0:  padding = 1.5
+            case 1:  padding = 1.0
+            default: padding = 0.5
+            }
+            headerH = (depth <= 1 && rect.width > 70 && rect.height > 20)
+                ? min(12, rect.height * 0.1) : 0
+
+            dirFrames.append(TreemapRect(
+                x: rect.minX, y: rect.minY, width: rect.width, height: rect.height,
+                node: node, depth: depth, isDirectoryFrame: true,
+                cushionX: cushionX, cushionY: cushionY
+            ))
+        }
 
         let innerRect = CGRect(
             x: rect.minX + padding,
@@ -146,18 +160,18 @@ final class TreemapCoordinator {
             height: max(0, rect.height - 2 * padding - headerH)
         )
 
-        guard innerRect.width >= 1.5 && innerRect.height >= 1.5 else { return }
+        guard innerRect.width >= 1 && innerRect.height >= 1 else { return }
         guard depth < maxDepth else {
             leafRects.append(contentsOf: TreemapLayout.layout(
-                nodes: node.children.filter { $0.size > 0 }, in: innerRect, minSize: 1.5))
+                nodes: node.children.filter { $0.size > 0 }, in: innerRect, minSize: 1.0))
             return
         }
 
         let childRects = TreemapLayout.layout(
-            nodes: node.children.filter { $0.size > 0 }, in: innerRect, minSize: 1.5)
+            nodes: node.children.filter { $0.size > 0 }, in: innerRect, minSize: 1.0)
 
         for cr in childRects {
-            if cr.node.isDirectory && !cr.node.children.isEmpty && cr.width > 4 && cr.height > 4 {
+            if cr.node.isDirectory && !cr.node.children.isEmpty && cr.width > 3 && cr.height > 3 {
                 layoutHierarchical(
                     node: cr.node,
                     rect: CGRect(x: cr.x, y: cr.y, width: cr.width, height: cr.height),

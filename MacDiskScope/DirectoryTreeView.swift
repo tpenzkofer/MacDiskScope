@@ -16,11 +16,16 @@ struct DirectoryTreeView: NSViewRepresentable {
     @Binding var treeAction: TreeAction
     let onNavigate: (FileNode) -> Void
     let onSelect: (FileNode) -> Void
-    let onDelete: (FileNode) -> Void
-    let onMove: (FileNode, URL) -> Void
+    let onSelectMultiple: ([FileNode]) -> Void
+    let onDelete: ([FileNode]) -> Void
+    let onMove: ([FileNode], URL) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onNavigate: onNavigate, onSelect: onSelect, onDelete: onDelete, onMove: onMove)
+        Coordinator(onNavigate: onNavigate, onSelect: onSelect, onSelectMultiple: onSelectMultiple, onDelete: onDelete, onMove: onMove)
+    }
+
+    private func selectedNodes(in outlineView: NSOutlineView) -> [FileNode] {
+        outlineView.selectedRowIndexes.compactMap { outlineView.item(atRow: $0) as? FileNode }
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -35,6 +40,7 @@ struct DirectoryTreeView: NSViewRepresentable {
         outlineView.usesAlternatingRowBackgroundColors = false
         outlineView.indentationPerLevel = 16
         outlineView.floatsGroupRows = false
+        outlineView.allowsMultipleSelection = true
         outlineView.coordinator = context.coordinator
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("main"))
@@ -59,6 +65,7 @@ struct DirectoryTreeView: NSViewRepresentable {
 
         coordinator.onNavigate = onNavigate
         coordinator.onSelect = onSelect
+        coordinator.onSelectMultiple = onSelectMultiple
         coordinator.onDelete = onDelete
         coordinator.onMove = onMove
 
@@ -74,12 +81,23 @@ struct DirectoryTreeView: NSViewRepresentable {
             }
         }
 
-        // Sync selection
+        // Sync selection — expand ancestors if needed so the item is visible
         if let targetID = selectedNodeID {
             if let currentSel = coordinator.selectedNode, currentSel.id == targetID {
                 // Already in sync
-            } else {
-                let row = outlineView.row(forItem: coordinator.findNode(id: targetID, in: node))
+            } else if let targetNode = coordinator.findNode(id: targetID, in: node) {
+                // Expand all ancestors so the node is visible
+                var ancestors: [FileNode] = []
+                var current = targetNode.parent
+                while let p = current {
+                    ancestors.append(p)
+                    current = p.parent
+                }
+                for ancestor in ancestors.reversed() {
+                    outlineView.expandItem(ancestor, expandChildren: false)
+                }
+
+                let row = outlineView.row(forItem: targetNode)
                 if row >= 0 {
                     outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
                     outlineView.scrollRowToVisible(row)
@@ -109,12 +127,14 @@ struct DirectoryTreeView: NSViewRepresentable {
     final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, QLPreviewPanelDataSource, QLPreviewPanelDelegate {
         var rootNode: FileNode?
         var selectedNode: FileNode?
+        var selectedNodes: [FileNode] = []
         var quickLookNode: FileNode?
         weak var outlineView: NSOutlineView?
         var onNavigate: (FileNode) -> Void
         var onSelect: (FileNode) -> Void
-        var onDelete: (FileNode) -> Void
-        var onMove: (FileNode, URL) -> Void
+        var onSelectMultiple: ([FileNode]) -> Void
+        var onDelete: ([FileNode]) -> Void
+        var onMove: ([FileNode], URL) -> Void
 
         private let byteFormatter: ByteCountFormatter = {
             let f = ByteCountFormatter()
@@ -123,9 +143,11 @@ struct DirectoryTreeView: NSViewRepresentable {
         }()
 
         init(onNavigate: @escaping (FileNode) -> Void, onSelect: @escaping (FileNode) -> Void,
-             onDelete: @escaping (FileNode) -> Void, onMove: @escaping (FileNode, URL) -> Void) {
+             onSelectMultiple: @escaping ([FileNode]) -> Void,
+             onDelete: @escaping ([FileNode]) -> Void, onMove: @escaping ([FileNode], URL) -> Void) {
             self.onNavigate = onNavigate
             self.onSelect = onSelect
+            self.onSelectMultiple = onSelectMultiple
             self.onDelete = onDelete
             self.onMove = onMove
         }
@@ -222,15 +244,24 @@ struct DirectoryTreeView: NSViewRepresentable {
 
         func outlineViewSelectionDidChange(_ notification: Notification) {
             guard let outlineView = outlineView else { return }
-            let row = outlineView.selectedRow
-            guard row >= 0, let node = outlineView.item(atRow: row) as? FileNode else { return }
-            selectedNode = node
-            onSelect(node)
 
-            // Update Quick Look if the panel is open — Finder-like behavior
+            // Gather all selected nodes
+            let selected = outlineView.selectedRowIndexes.compactMap { outlineView.item(atRow: $0) as? FileNode }
+            selectedNodes = selected
+
+            // Push selection to ScanState
+            if selected.count > 1 {
+                selectedNode = selected.last
+                onSelectMultiple(selected)
+            } else if let last = selected.last {
+                selectedNode = last
+                onSelect(last)
+            }
+
+            // Update Quick Look if the panel is open
             if let panel = QLPreviewPanel.shared(), panel.isVisible {
-                if !node.isDirectory {
-                    quickLookNode = node
+                if let last = selected.last, !last.isDirectory {
+                    quickLookNode = last
                     panel.reloadData()
                 }
             }
@@ -249,6 +280,7 @@ struct DirectoryTreeView: NSViewRepresentable {
         func outlineView(_ outlineView: NSOutlineView, menuForItem item: Any) -> NSMenu? {
             guard let node = item as? FileNode else { return nil }
             let menu = NSMenu()
+            let count = selectedNodes.count
 
             let revealItem = NSMenuItem(title: "Reveal in Finder", action: #selector(contextReveal(_:)), keyEquivalent: "")
             revealItem.target = self
@@ -265,23 +297,23 @@ struct DirectoryTreeView: NSViewRepresentable {
             qlItem.representedObject = node
             menu.addItem(qlItem)
 
-            let copyPathItem = NSMenuItem(title: "Copy Path", action: #selector(contextCopyPath(_:)), keyEquivalent: "")
+            let copyPathItem = NSMenuItem(title: count > 1 ? "Copy Paths (\(count))" : "Copy Path",
+                                          action: #selector(contextCopyPath(_:)), keyEquivalent: "")
             copyPathItem.target = self
-            copyPathItem.representedObject = node
             menu.addItem(copyPathItem)
 
             menu.addItem(NSMenuItem.separator())
 
-            let moveItem = NSMenuItem(title: "Move to...", action: #selector(contextMove(_:)), keyEquivalent: "")
+            let moveTitle = count > 1 ? "Move \(count) Items to..." : "Move to..."
+            let moveItem = NSMenuItem(title: moveTitle, action: #selector(contextMove(_:)), keyEquivalent: "")
             moveItem.target = self
-            moveItem.representedObject = node
             menu.addItem(moveItem)
 
             menu.addItem(NSMenuItem.separator())
 
-            let deleteItem = NSMenuItem(title: "Move to Trash", action: #selector(contextDelete(_:)), keyEquivalent: "")
+            let deleteTitle = count > 1 ? "Move \(count) Items to Trash" : "Move to Trash"
+            let deleteItem = NSMenuItem(title: deleteTitle, action: #selector(contextDelete(_:)), keyEquivalent: "")
             deleteItem.target = self
-            deleteItem.representedObject = node
             menu.addItem(deleteItem)
 
             return menu
@@ -310,40 +342,53 @@ struct DirectoryTreeView: NSViewRepresentable {
         }
 
         @objc func contextCopyPath(_ sender: NSMenuItem) {
-            guard let node = sender.representedObject as? FileNode else { return }
+            let nodes = selectedNodes.isEmpty ? [selectedNode].compactMap { $0 } : selectedNodes
+            let paths = nodes.map { $0.path }.joined(separator: "\n")
             NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(node.path, forType: .string)
+            NSPasteboard.general.setString(paths, forType: .string)
         }
 
         @objc func contextMove(_ sender: NSMenuItem) {
-            guard let node = sender.representedObject as? FileNode else { return }
+            let nodes = selectedNodes.isEmpty ? [selectedNode].compactMap { $0 } : selectedNodes
+            guard !nodes.isEmpty else { return }
             let panel = NSOpenPanel()
             panel.canChooseDirectories = true
             panel.canChooseFiles = false
             panel.allowsMultipleSelection = false
-            panel.message = "Choose destination for \"\(node.name)\""
+            let msg = nodes.count == 1
+                ? "Choose destination for \"\(nodes[0].name)\""
+                : "Choose destination for \(nodes.count) items"
+            panel.message = msg
             panel.prompt = "Move Here"
             if panel.runModal() == .OK, let url = panel.url {
-                onMove(node, url)
+                onMove(nodes, url)
                 outlineView?.reloadData()
             }
         }
 
         @objc func contextDelete(_ sender: NSMenuItem) {
-            guard let node = sender.representedObject as? FileNode else { return }
+            let nodes = selectedNodes.isEmpty ? [selectedNode].compactMap { $0 } : selectedNodes
+            guard !nodes.isEmpty else { return }
             let alert = NSAlert()
-            alert.messageText = "Move \"\(node.name)\" to Trash?"
-            let sizeStr = byteFormatter.string(fromByteCount: node.size)
-            if node.isDirectory {
-                alert.informativeText = "This folder contains \(FormatUtils.formatCount(node.fileCount)) files (\(sizeStr))."
+            if nodes.count == 1 {
+                let node = nodes[0]
+                alert.messageText = "Move \"\(node.name)\" to Trash?"
+                let sizeStr = byteFormatter.string(fromByteCount: node.size)
+                if node.isDirectory {
+                    alert.informativeText = "This folder contains \(FormatUtils.formatCount(node.fileCount)) files (\(sizeStr))."
+                } else {
+                    alert.informativeText = "This file is \(sizeStr)."
+                }
             } else {
-                alert.informativeText = "This file is \(sizeStr)."
+                let totalSize = nodes.reduce(Int64(0)) { $0 + $1.size }
+                alert.messageText = "Move \(nodes.count) items to Trash?"
+                alert.informativeText = "Total size: \(byteFormatter.string(fromByteCount: totalSize))"
             }
             alert.alertStyle = .warning
             alert.addButton(withTitle: "Move to Trash")
             alert.addButton(withTitle: "Cancel")
             if alert.runModal() == .alertFirstButtonReturn {
-                onDelete(node)
+                onDelete(nodes)
                 outlineView?.reloadData()
             }
         }

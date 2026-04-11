@@ -75,8 +75,9 @@ struct ContentView: View {
                     treeAction: $treeAction,
                     onNavigate: { scanState.navigateInto($0) },
                     onSelect: { scanState.selectNode($0) },
-                    onDelete: { scanState.deleteNode($0) },
-                    onMove: { node, url in scanState.moveNode(node, to: url) }
+                    onSelectMultiple: { scanState.selectMultiple($0) },
+                    onDelete: { scanState.deleteNodes($0) },
+                    onMove: { nodes, url in scanState.moveNodes(nodes, to: url) }
                 )
             }
         } else if scanState.isScanning {
@@ -143,7 +144,14 @@ struct ContentView: View {
                             totalSize: scanState.rootNode?.size ?? 0
                         )
 
-                        if let selected = scanState.selectedNode {
+                        if scanState.selectedNodes.count > 1 {
+                            Divider()
+                            MultiSelectionInfoView(
+                                nodes: scanState.selectedNodes,
+                                rootSize: scanState.rootNode?.size ?? 1
+                            )
+                            .frame(minHeight: 120, idealHeight: 160)
+                        } else if let selected = scanState.selectedNode {
                             Divider()
                             InfoPanelView(
                                 node: selected,

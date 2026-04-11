@@ -196,3 +196,80 @@ struct InfoPanelView: View {
         }
     }
 }
+
+// MARK: - Multi-selection summary
+
+struct MultiSelectionInfoView: View {
+    let nodes: [FileNode]
+    let rootSize: Int64
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "square.stack")
+                    .foregroundColor(.accentColor)
+                    .font(.title3)
+                Text("\(nodes.count) items selected")
+                    .font(.headline)
+                Spacer()
+                Text(FormatUtils.formatBytes(totalSize))
+                    .font(.system(.title3, design: .monospaced))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+
+            Divider()
+
+            ScrollView {
+                VStack(spacing: 1) {
+                    statRow("Total size", FormatUtils.formatBytes(totalSize))
+                    statRow("% of scanned", FormatUtils.percentString(totalSize, of: rootSize))
+                    statRow("Files", FormatUtils.formatCount(fileCount))
+                    statRow("Folders", FormatUtils.formatCount(dirCount))
+                    statRow("Total items", FormatUtils.formatCount(totalItems))
+
+                    if let largest = nodes.max(by: { $0.size < $1.size }) {
+                        statRow("Largest", "\(largest.name) (\(FormatUtils.formatBytes(largest.size)))")
+                    }
+                    if let smallest = nodes.filter({ $0.size > 0 }).min(by: { $0.size < $1.size }) {
+                        statRow("Smallest", "\(smallest.name) (\(FormatUtils.formatBytes(smallest.size)))")
+                    }
+
+                    statRow("Avg size", FormatUtils.formatBytes(fileCount > 0 ? totalSize / Int64(fileCount) : 0))
+
+                    let extCount = Set(nodes.compactMap { $0.isDirectory ? nil : ($0.fileExtension.isEmpty ? nil : $0.fileExtension) }).count
+                    if extCount > 0 {
+                        statRow("File types", "\(extCount) unique extension\(extCount == 1 ? "" : "s")")
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+        }
+    }
+
+    private var totalSize: Int64 { nodes.reduce(0) { $0 + $1.size } }
+    private var fileCount: Int {
+        nodes.reduce(0) { $0 + ($1.isDirectory ? $1.fileCount : 1) }
+    }
+    private var dirCount: Int {
+        nodes.reduce(0) { $0 + ($1.isDirectory ? 1 + $1.subDirCount : 0) }
+    }
+    private var totalItems: Int { fileCount + dirCount }
+
+    @ViewBuilder
+    private func statRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .top) {
+            Text(label)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .frame(width: 100, alignment: .leading)
+            Text(value)
+                .font(.system(.caption, design: .monospaced))
+                .lineLimit(2)
+                .truncationMode(.middle)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 2)
+    }
+}
